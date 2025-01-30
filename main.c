@@ -21,7 +21,7 @@ struct cpu_stats_info {
 };
 
 struct process_info {
-  int pid;
+  unsigned long pid;
   char process_name[150];
   char command_line_args[256];
   char state;
@@ -166,9 +166,11 @@ void read_utime_stime(long pid, struct process_info *info) {
   unsigned long majflt;
   unsigned long cmajflt;
 
+  info->pid = pid;
+
   sscanf(ptr, "%c %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu",
-         &process_state, &parent_process_pid, &pgrp, &session_id, &tty_nr,
-         &tpgid, &flags, &minflt, &cminflt, &majflt, &cmajflt, &info->utime,
+         &info->state, &parent_process_pid, &pgrp, &session_id, &tty_nr, &tpgid,
+         &flags, &minflt, &cminflt, &majflt, &cmajflt, &info->utime,
          &info->stime);
 
   free(buffer);
@@ -176,49 +178,62 @@ void read_utime_stime(long pid, struct process_info *info) {
 }
 
 int main() {
-  struct cpu_stats_info *cpu_info = get_cpu_stats();
+  while (1) {
+    system("clear");
+    struct cpu_stats_info *cpu_info = get_cpu_stats();
 
-  unsigned long long total_cpu_time = calculate_cpu_time_total(cpu_info);
+    unsigned long long total_cpu_time = calculate_cpu_time_total(cpu_info);
 
-  // printf("total cpu time %llu", total_cpu_time);
+    // printf("total cpu time %llu", total_cpu_time);
 
-  DIR *d;
-  struct dirent *dir;
-  d = opendir("/proc");
-  if (d) {
-    while ((dir = readdir(d)) != NULL) {
-      char *next = NULL;
-      char *process_name = NULL;
-      long val = strtol(dir->d_name, &next, 10);
-      if (next != dir->d_name || *next == '\0') {
-        // printf("%s\n", dir->d_name);
-        struct process_info *info =
-            (struct process_info *)calloc(1, sizeof(struct process_info));
-        process_name = read_command_line(val);
-        if (!process_name) {
-          // if the cmdline has no content get the process name from comm file
+    DIR *d;
+    struct dirent *dir;
+    d = opendir("/proc");
+    if (d) {
+      while ((dir = readdir(d)) != NULL) {
+        char *next = NULL;
+        char *process_args = NULL;
+        char *process_name = NULL;
+        long val = strtol(dir->d_name, &next, 10);
+        if (next != dir->d_name || *next == '\0') {
+          // printf("%s\n", dir->d_name);
+          struct process_info *info =
+              (struct process_info *)calloc(1, sizeof(struct process_info));
+          process_args = read_command_line(val);
           process_name = read_process_name(val);
-        }
 
-        if (process_name) {
-          strncpy(info->command_line_args, process_name,
-                  sizeof(info->command_line_args) - 1);
-          info->command_line_args[sizeof(info->command_line_args) - 1] = '\0';
-        } else {
-          strcpy(info->command_line_args, "[Unknown]");
-        }
+          if (process_args) {
+            strncpy(info->command_line_args, process_args,
+                    sizeof(info->command_line_args) - 1);
+            info->command_line_args[sizeof(info->command_line_args) - 1] = '\0';
+          } else {
+            strcpy(info->command_line_args, "[]");
+          }
 
-        read_utime_stime(val, info);
+          if (process_name) {
+            strncpy(info->process_name, process_name,
+                    sizeof(info->process_name) - 1);
+            info->command_line_args[sizeof(info->process_name) - 1] = '\0';
+          } else {
+            strcpy(info->process_name, "[]");
+          }
 
-        if (process_name) {
-          free(process_name);
+          read_utime_stime(val, info);
+
+          printf("PID: %lu |name: %s| utime: %lu | stime: %lu\n", info->pid,
+                 info->process_name, info->utime, info->stime);
+
+          if (process_name) {
+            free(process_name);
+          }
+          free(info);
         }
-        free(info);
       }
+      closedir(d);
     }
-    closedir(d);
-  }
 
-  free(cpu_info);
+    free(cpu_info);
+    usleep(500000);
+  }
   return 0;
 }
