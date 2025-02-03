@@ -1,6 +1,6 @@
 #include <dirent.h>
 #include <signal.h>
-#include <stdbool.h> // for bool type
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -240,6 +240,7 @@ int main() {
   // Main loop
   while (1) {
     system("clear");
+
     printf("+----------+-----------+---------------+\n");
     printf("| PID      | CPU Usage | Process Name  |\n");
     printf("+----------+-----------+---------------+\n");
@@ -292,10 +293,9 @@ int main() {
           ensure_capacity((size_t)val);
 
           if (valid_proc[val]) {
-            // Calculate the difference in process time between iterations.
             unsigned long proc_diff =
                 current_proc_time - prev_proc_cpu_time[val];
-            // Calculate the overall CPU time difference.
+
             unsigned long long total_diff =
                 total_cpu_time - prev_total_cpu_time;
             if (total_diff > 0) {
@@ -312,10 +312,12 @@ int main() {
           printf("PID: %-5lu | CPU: %-.2f | NAME: %-13s\n", info->pid,
                  usage_percent, info->process_name);
 
-          if (process_name)
+          if (process_name) {
             free(process_name);
-          if (process_args)
+          }
+          if (process_args) {
             free(process_args);
+          }
           free(info);
         }
       }
