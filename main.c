@@ -8,8 +8,9 @@
 #include <termios.h>
 #include <unistd.h>
 
-#define UTIME_INDEX 13
-#define STIME_INDEX 14
+#define UTIME_INDEX 12
+#define STIME_INDEX 13
+#define MAX_FIELDS 52
 #define INITIAL_CAPACITY 1024
 
 // Global dynamic arrays to store previous process CPU times and validity flags.
@@ -40,7 +41,75 @@ struct process_info {
   char state;
   unsigned long utime;
   unsigned long stime;
+  unsigned long rss;
 };
+
+void parse_stat_file(const char *buffer, int pid, struct process_info *info) {
+  // find first and last ()
+
+  char *start = strchr(buffer, '(');
+  char *end = strrchr(buffer, ')');
+  if (!start || !end || end < start) {
+    fprintf(stderr, "Failed to locate command name boundaries for pid: %d\n",
+            pid);
+    exit(EXIT_FAILURE);
+  }
+  char state;
+  int n;
+  if (sscanf(end + 2, "%c%n", &state, &n) != 1) {
+    fprintf(stderr, "Failed to parse state for pid: %d\n", pid);
+    exit(EXIT_FAILURE);
+  }
+  // rest of field
+  char *rest = end + 2 + n;
+
+  int ppid, pgrp, session, tty_nr, tpgid;
+  unsigned int flags;
+  unsigned long minflt, cminflt, majflt, cmajflt;
+  unsigned long utime, stime;
+  long cutime, cstime, priority, nice, num_threads, itrealvalue;
+
+  int count = sscanf(
+      rest, "%d %d %d %d %d %u %lu %lu %lu %lu %lu %lu %ld %ld %ld %ld %ld %ld",
+      &ppid, &pgrp, &session, &tty_nr, &tpgid, &flags, &minflt, &cminflt,
+      &majflt, &cmajflt, &utime, &stime, &cutime, &cstime, &priority, &nice,
+      &num_threads, &itrealvalue);
+
+  if (count < 18) {
+    fprintf(stderr, "Error parsing remaining fields (only got %d fields)\n",
+            count);
+    exit(EXIT_FAILURE);
+  }
+
+  info->utime = utime;
+  info->stime = stime;
+  info->pid = pid;
+  info->state = state;
+
+  /*
+  // Output some of the parsed fields:
+  printf("PID: %d\n", pid);
+  printf("State: %c\n", state);
+  printf("PPID: %d\n", ppid);
+  printf("PGRP: %d\n", pgrp);
+  printf("Session: %d\n", session);
+  printf("TTY_NR: %d\n", tty_nr);
+  printf("TPGID: %d\n", tpgid);
+  printf("Flags: %u\n", flags);
+  printf("Minflt: %lu\n", minflt);
+  printf("Cminflt: %lu\n", cminflt);
+  printf("Majflt: %lu\n", majflt);
+  printf("Cmajflt: %lu\n", cmajflt);
+  printf("Utime: %lu\n", utime);
+  printf("Stime: %lu\n", stime);
+  printf("Cutime: %ld\n", cutime);
+  printf("Cstime: %ld\n", cstime);
+  printf("Priority: %ld\n", priority);
+  printf("Nice: %ld\n", nice);
+  printf("Num Threads: %ld\n", num_threads);
+  printf("Itrealvalue: %ld\n", itrealvalue);
+  */
+}
 
 // Function to ensure our dynamic arrays can index at least up to pid.
 void ensure_capacity(size_t pid) {
@@ -153,7 +222,7 @@ char *read_command_line(long pid) {
   return buffer;
 }
 
-void read_utime_stime(long pid, struct process_info *info) {
+void read_stat_file_data(long pid, struct process_info *info) {
   char path[64];
   snprintf(path, sizeof(path), "/proc/%lu/stat", pid);
   FILE *file_ptr = fopen(path, "r");
@@ -171,38 +240,9 @@ void read_utime_stime(long pid, struct process_info *info) {
     fclose(file_ptr);
     return;
   }
-  // Skip until after the closing parenthesis (process name)
-  char *ptr = buffer;
-  while (*ptr != ')' && *ptr != '\0') {
-    ptr++;
-  }
-  if (*ptr == ')')
-    ptr++;
-  if (*ptr == ' ')
-    ptr++;
 
-  // Read process state
-  sscanf(ptr, "%c", &info->state);
+  parse_stat_file(buffer, pid, info);
 
-  // Declare dummy variables to skip unnecessary fields.
-  unsigned long dummy;
-  unsigned long parent_process_pid;
-  unsigned long pgrp;
-  unsigned long session_id;
-  unsigned long tty_nr;
-  unsigned long tpgid;
-  unsigned long flags;
-  unsigned long minflt;
-  unsigned long cminflt;
-  unsigned long majflt;
-  unsigned long cmajflt;
-
-  // Skip process state (already read) then parse until utime and stime.
-  sscanf(ptr, "%*c %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu %lu",
-         &parent_process_pid, &pgrp, &session_id, &tty_nr, &tpgid, &flags,
-         &minflt, &cminflt, &majflt, &cmajflt, &info->utime, &info->stime);
-
-  info->pid = pid;
   free(buffer);
   fclose(file_ptr);
 }
@@ -241,9 +281,9 @@ int main() {
   while (1) {
     system("clear");
 
-    printf("+----------+-----------+---------------+\n");
-    printf("| PID      | CPU Usage | Process Name  |\n");
-    printf("+----------+-----------+---------------+\n");
+    printf("+----------+--------+------------+---------------+\n");
+    printf("| PID      | State  |  CPU Usage | Process Name  |\n");
+    printf("+----------+--------+------------+---------------+\n");
 
     // Get the current overall CPU stats and compute total CPU time.
     struct cpu_stats_info *cpu_info = get_cpu_stats();
@@ -283,7 +323,7 @@ int main() {
             strcpy(info->process_name, "[]");
           }
 
-          read_utime_stime(val, info);
+          read_stat_file_data(val, info);
 
           // Calculate cumulative process CPU time (user + system).
           unsigned long current_proc_time = info->utime + info->stime;
@@ -309,8 +349,8 @@ int main() {
           // Update the stored CPU time for this process.
           prev_proc_cpu_time[val] = current_proc_time;
 
-          printf("PID: %-5lu | CPU: %-.2f | NAME: %-13s\n", info->pid,
-                 usage_percent, info->process_name);
+          printf("PID: %-5lu | State: %-c | CPU: %-.2f | NAME: %-13s\n",
+                 info->pid, info->state, usage_percent, info->process_name);
 
           if (process_name) {
             free(process_name);
