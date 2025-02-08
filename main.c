@@ -68,12 +68,17 @@ void parse_stat_file(const char *buffer, int pid, struct process_info *info) {
   unsigned long minflt, cminflt, majflt, cmajflt;
   unsigned long utime, stime;
   long cutime, cstime, priority, nice, num_threads, itrealvalue;
+  unsigned long long starttime;
+  unsigned long vsize;
+  long rss;
 
-  int count = sscanf(
-      rest, "%d %d %d %d %d %u %lu %lu %lu %lu %lu %lu %ld %ld %ld %ld %ld %ld",
-      &ppid, &pgrp, &session, &tty_nr, &tpgid, &flags, &minflt, &cminflt,
-      &majflt, &cmajflt, &utime, &stime, &cutime, &cstime, &priority, &nice,
-      &num_threads, &itrealvalue);
+  int count =
+      sscanf(rest,
+             "%d %d %d %d %d %u %lu %lu %lu %lu %lu %lu %ld %ld %ld %ld %ld "
+             "%ld %llu %lu %ld",
+             &ppid, &pgrp, &session, &tty_nr, &tpgid, &flags, &minflt, &cminflt,
+             &majflt, &cmajflt, &utime, &stime, &cutime, &cstime, &priority,
+             &nice, &num_threads, &itrealvalue, &starttime, &vsize, &rss);
 
   if (count < 18) {
     fprintf(stderr, "Error parsing remaining fields (only got %d fields)\n",
@@ -85,6 +90,7 @@ void parse_stat_file(const char *buffer, int pid, struct process_info *info) {
   info->stime = stime;
   info->pid = pid;
   info->state = state;
+  info->rss = rss * sysconf(_SC_PAGESIZE);
 
   /*
   // Output some of the parsed fields:
@@ -349,8 +355,10 @@ int main() {
           // Update the stored CPU time for this process.
           prev_proc_cpu_time[val] = current_proc_time;
 
-          printf("PID: %-5lu | State: %-c | CPU: %-.2f | NAME: %-13s\n",
-                 info->pid, info->state, usage_percent, info->process_name);
+          printf("PID: %-5lu | State: %-c | CPU: %-.2f | NAME: %-13s | "
+                 "RSS:%-6lu\n",
+                 info->pid, info->state, usage_percent, info->process_name,
+                 info->rss);
 
           if (process_name) {
             free(process_name);
@@ -381,7 +389,7 @@ int main() {
       }
     }
 
-    printf("+----------+-----------+---------------+\n");
+    printf("+----------+--------+------------+---------------+\n");
     usleep(400000); // Sleep for 400ms between updates.
   }
 
