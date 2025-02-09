@@ -175,33 +175,6 @@ calculate_cpu_time_total(const struct cpu_stats_info *cpu_info) {
          cpu_info->iowait + cpu_info->irq + cpu_info->softirq + cpu_info->steal;
 }
 
-char *read_process_name(long pid) {
-  char path[64];
-  snprintf(path, sizeof(path), "/proc/%lu/comm", pid);
-  FILE *file_ptr = fopen(path, "r");
-  if (!file_ptr) {
-    return NULL;
-  }
-  char *buffer = malloc(1024);
-  if (!buffer) {
-    perror("malloc");
-    return NULL;
-  }
-  size_t bytes_read = fread(buffer, 1, 1023, file_ptr);
-  if (bytes_read <= 0) {
-    fclose(file_ptr);
-    free(buffer);
-    return NULL;
-  }
-  fclose(file_ptr);
-  size_t len = strlen(buffer);
-  if (len > 0 && buffer[len - 1] == '\n') {
-    buffer[len - 1] = '\0';
-  }
-  str_trim(buffer);
-  return buffer;
-}
-
 char *read_command_line(long pid) {
   char path[64];
   snprintf(path, sizeof(path), "/proc/%lu/cmdline", pid);
@@ -225,10 +198,6 @@ char *read_command_line(long pid) {
 
   size_t len = strlen(buffer);
 
-  for (size_t i = 0; i < bytes_read; i++) {
-    if (buffer[i] == '\0')
-      buffer[i] = ' ';
-  }
   buffer[bytes_read] = '\0';
   return buffer;
 }
@@ -293,16 +262,16 @@ int main() { // Register signal handler (for SIGINT, for example).
     system("clear");
     //   printf("\033[H\033[J");
 
-    printf(
-        "+-------------------------------------------------------------------"
-        "----"
-        "---------------\n");
-    printf("|%-52.50s|%-9s|%-s|%-s|%-8s|\n", "PROCESS NAME", "PID", "CPU (%)",
-           "STATE", "RSS(mb)");
-    printf(
-        "+-------------------------------------------------------------------"
-        "----"
-        "---------------\n");
+    printf("+------------------------------------------------------------------"
+           "-----"
+           "----"
+           "---------------\n");
+    printf("|%-52.50s|%-9s|%-s|%-s|%-8s|%-s\n", "PROCESS NAME", "PID",
+           "CPU (%)", "STATE", "RSS(mb)", "ARGS");
+    printf("+------------------------------------------------------------------"
+           "-----"
+           "----"
+           "---------------\n");
 
     // Get the current overall CPU stats and compute total CPU time.
     struct cpu_stats_info *cpu_info = get_cpu_stats();
@@ -324,7 +293,6 @@ int main() { // Register signal handler (for SIGINT, for example).
             continue;
 
           process_args = read_command_line(val);
-          process_name = read_process_name(val);
 
           if (process_args) {
             strncpy(info->command_line_args, process_args,
@@ -368,9 +336,9 @@ int main() { // Register signal handler (for SIGINT, for example).
           // Update the stored CPU time for this process.
           prev_proc_cpu_time[val] = current_proc_time;
 
-          printf("[%-50.50s] | %-6lu  | %-5.f | %-3c | %-7.2f|\n",
+          printf("[%-50.50s] | %-6lu  | %-5.f | %-3c | %-7.2f| %-.140s\n",
                  info->process_name, info->pid, usage_percent, info->state,
-                 info->rss);
+                 info->rss, info->command_line_args);
 
           if (process_name) {
             free(process_name);
@@ -401,10 +369,10 @@ int main() { // Register signal handler (for SIGINT, for example).
       }
     }
 
-    printf(
-        "+-------------------------------------------------------------------"
-        "----"
-        "---------------\n");
+    printf("+------------------------------------------------------------------"
+           "-----"
+           "----"
+           "---------------\n");
     usleep(400000); // Sleep for 400ms between updates.
   }
 
