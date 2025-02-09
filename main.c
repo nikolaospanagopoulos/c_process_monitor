@@ -13,6 +13,7 @@
 #define MAX_FIELDS 52
 #define INITIAL_CAPACITY 1024
 
+struct termios oldt, newt;
 // Global dynamic arrays to store previous process CPU times and validity flags.
 unsigned long *prev_proc_cpu_time = NULL;
 bool *valid_proc = NULL;
@@ -36,13 +37,21 @@ struct cpu_stats_info {
 
 struct process_info {
   unsigned long pid;
-  char process_name[150];
+  char process_name[50];
   char command_line_args[256];
   char state;
   unsigned long utime;
   unsigned long stime;
-  unsigned long rss;
+  double rss;
 };
+
+void str_trim(char *str) {
+  size_t len = strlen(str);
+  while (len > 0 && str[len - 1] == ' ') {
+    str[len - 1] = '\0';
+    len--;
+  }
+}
 
 void parse_stat_file(const char *buffer, int pid, struct process_info *info) {
   // find first and last ()
@@ -54,6 +63,14 @@ void parse_stat_file(const char *buffer, int pid, struct process_info *info) {
             pid);
     exit(EXIT_FAILURE);
   }
+
+  size_t comm_len = end - start - 1;
+  if (comm_len > sizeof(info->process_name)) {
+    comm_len = sizeof(info->process_name) - 1;
+  }
+  strncpy(info->process_name, start + 1, comm_len);
+  info->process_name[comm_len] = '\0';
+
   char state;
   int n;
   if (sscanf(end + 2, "%c%n", &state, &n) != 1) {
@@ -80,7 +97,7 @@ void parse_stat_file(const char *buffer, int pid, struct process_info *info) {
              &majflt, &cmajflt, &utime, &stime, &cutime, &cstime, &priority,
              &nice, &num_threads, &itrealvalue, &starttime, &vsize, &rss);
 
-  if (count < 18) {
+  if (count < 21) {
     fprintf(stderr, "Error parsing remaining fields (only got %d fields)\n",
             count);
     exit(EXIT_FAILURE);
@@ -90,31 +107,8 @@ void parse_stat_file(const char *buffer, int pid, struct process_info *info) {
   info->stime = stime;
   info->pid = pid;
   info->state = state;
-  info->rss = rss * sysconf(_SC_PAGESIZE);
-
-  /*
-  // Output some of the parsed fields:
-  printf("PID: %d\n", pid);
-  printf("State: %c\n", state);
-  printf("PPID: %d\n", ppid);
-  printf("PGRP: %d\n", pgrp);
-  printf("Session: %d\n", session);
-  printf("TTY_NR: %d\n", tty_nr);
-  printf("TPGID: %d\n", tpgid);
-  printf("Flags: %u\n", flags);
-  printf("Minflt: %lu\n", minflt);
-  printf("Cminflt: %lu\n", cminflt);
-  printf("Majflt: %lu\n", majflt);
-  printf("Cmajflt: %lu\n", cmajflt);
-  printf("Utime: %lu\n", utime);
-  printf("Stime: %lu\n", stime);
-  printf("Cutime: %ld\n", cutime);
-  printf("Cstime: %ld\n", cstime);
-  printf("Priority: %ld\n", priority);
-  printf("Nice: %ld\n", nice);
-  printf("Num Threads: %ld\n", num_threads);
-  printf("Itrealvalue: %ld\n", itrealvalue);
-  */
+  info->rss =
+      (rss > 0) ? (double)(rss * sysconf(_SC_PAGESIZE)) / (1024 * 1024) : 0;
 }
 
 // Function to ensure our dynamic arrays can index at least up to pid.
@@ -200,7 +194,11 @@ char *read_process_name(long pid) {
     return NULL;
   }
   fclose(file_ptr);
-  buffer[bytes_read] = '\0';
+  size_t len = strlen(buffer);
+  if (len > 0 && buffer[len - 1] == '\n') {
+    buffer[len - 1] = '\0';
+  }
+  str_trim(buffer);
   return buffer;
 }
 
@@ -224,6 +222,13 @@ char *read_command_line(long pid) {
     return NULL;
   }
   fclose(file_ptr);
+
+  size_t len = strlen(buffer);
+
+  for (size_t i = 0; i < bytes_read; i++) {
+    if (buffer[i] == '\0')
+      buffer[i] = ' ';
+  }
   buffer[bytes_read] = '\0';
   return buffer;
 }
@@ -255,16 +260,16 @@ void read_stat_file_data(long pid, struct process_info *info) {
 
 void handle_exit(int sig) {
   printf("\nCaught signal %d! Cleaning up...\n", sig);
+  free(prev_proc_cpu_time);
+  free(valid_proc);
+  tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
   exit(0); // Cleanup handlers registered with atexit() will run here.
 }
-
-int main() {
-  // Register signal handler (for SIGINT, for example).
+int main() { // Register signal handler (for SIGINT, for example).
   signal(SIGINT, handle_exit);
 
   // Set terminal to non-canonical mode so that key presses are detected
   // immediately.
-  struct termios oldt, newt;
   tcgetattr(STDIN_FILENO, &oldt); // Save current terminal settings
   newt = oldt;
   newt.c_lflag &= ~(ICANON | ECHO); // Disable canonical mode and echo
@@ -286,10 +291,18 @@ int main() {
   // Main loop
   while (1) {
     system("clear");
+    //   printf("\033[H\033[J");
 
-    printf("+----------+--------+------------+---------------+\n");
-    printf("| PID      | State  |  CPU Usage | Process Name  |\n");
-    printf("+----------+--------+------------+---------------+\n");
+    printf(
+        "+-------------------------------------------------------------------"
+        "----"
+        "---------------\n");
+    printf("|%-52.50s|%-9s|%-s|%-s|%-8s|\n", "PROCESS NAME", "PID", "CPU (%)",
+           "STATE", "RSS(mb)");
+    printf(
+        "+-------------------------------------------------------------------"
+        "----"
+        "---------------\n");
 
     // Get the current overall CPU stats and compute total CPU time.
     struct cpu_stats_info *cpu_info = get_cpu_stats();
@@ -355,9 +368,8 @@ int main() {
           // Update the stored CPU time for this process.
           prev_proc_cpu_time[val] = current_proc_time;
 
-          printf("PID: %-5lu | State: %-c | CPU: %-.2f | NAME: %-13s | "
-                 "RSS:%-6lu\n",
-                 info->pid, info->state, usage_percent, info->process_name,
+          printf("[%-50.50s] | %-6lu  | %-5.f | %-3c | %-7.2f|\n",
+                 info->process_name, info->pid, usage_percent, info->state,
                  info->rss);
 
           if (process_name) {
@@ -389,7 +401,10 @@ int main() {
       }
     }
 
-    printf("+----------+--------+------------+---------------+\n");
+    printf(
+        "+-------------------------------------------------------------------"
+        "----"
+        "---------------\n");
     usleep(400000); // Sleep for 400ms between updates.
   }
 
