@@ -6,13 +6,6 @@ A lightweight, terminal-based Linux process and CPU usage monitor built in C usi
 
 ✅ Displays active processes with:
 
-- **PID (Process ID)**
-- **CPU Usage (%)**
-- **Process Name**
-- **Command line args**
-- **State**
-- **RSS**
-
 - **Real-time Process Monitoring**: Displays a live list of running processes.
 - **CPU Usage**: Calculates and displays the CPU usage percentage for each process.
 - **Memory Usage**: Shows the Resident Set Size (RSS) in megabytes for each process.
