@@ -20,7 +20,6 @@ bool *valid_proc = NULL;
 // Keep track of the current capacity (number of elements allocated).
 size_t capacity = 0;
 
-// Global variable to store previous total CPU time.
 unsigned long long prev_total_cpu_time = 0;
 
 struct cpu_stats_info {
@@ -77,7 +76,6 @@ void parse_stat_file(const char *buffer, int pid, struct process_info *info) {
     fprintf(stderr, "Failed to parse state for pid: %d\n", pid);
     exit(EXIT_FAILURE);
   }
-  // rest of field
   char *rest = end + 2 + n;
 
   int ppid, pgrp, session, tty_nr, tpgid;
@@ -232,7 +230,7 @@ void handle_exit(int sig) {
   free(prev_proc_cpu_time);
   free(valid_proc);
   tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
-  exit(0); // Cleanup handlers registered with atexit() will run here.
+  exit(0);
 }
 int main() { // Register signal handler (for SIGINT, for example).
   signal(SIGINT, handle_exit);
@@ -244,7 +242,6 @@ int main() { // Register signal handler (for SIGINT, for example).
   newt.c_lflag &= ~(ICANON | ECHO); // Disable canonical mode and echo
   tcsetattr(STDIN_FILENO, TCSANOW, &newt);
 
-  // Initialize our dynamic arrays.
   capacity = INITIAL_CAPACITY;
   prev_proc_cpu_time = malloc(capacity * sizeof(unsigned long));
   valid_proc = malloc(capacity * sizeof(bool));
@@ -267,7 +264,7 @@ int main() { // Register signal handler (for SIGINT, for example).
            "----"
            "---------------\n");
     printf("|%-52.50s|%-9s|%-s|%-s|%-8s|%-s\n", "PROCESS NAME", "PID",
-           "CPU (%)", "STATE", "RSS(mb)", "ARGS");
+           "CPU (%)", "STATE", "RSS(mb)", "CMD");
     printf("+------------------------------------------------------------------"
            "-----"
            "----"
