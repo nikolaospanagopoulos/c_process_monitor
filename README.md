@@ -10,12 +10,20 @@ A lightweight, terminal-based Linux process and CPU usage monitor built in C usi
 - **CPU Usage (%)**
 - **Process Name**
 - **Command line args**
+- **State**
+- **RSS**
 
-✅ Dynamically allocates memory to track CPU usage efficiently.  
-✅ Uses **non-blocking input handling** for smooth updates.  
-✅ Supports **keyboard interrupt (`Ctrl + C`)** and **'q' key** for quitting.
+- **Real-time Process Monitoring**: Displays a live list of running processes.
+- **CPU Usage**: Calculates and displays the CPU usage percentage for each process.
+- **Memory Usage**: Shows the Resident Set Size (RSS) in megabytes for each process.
+- **Process State**: Indicates the current state of each process (e.g., running, sleeping).
 
 ---
+
+## Prerequisites
+
+- **Linux Environment**: This tool is designed to run on Linux systems.
+- **GCC Compiler**: Ensure you have GCC installed to compile the C code.
 
 ## 🛠️ Installation & Usage
 
@@ -23,9 +31,6 @@ A lightweight, terminal-based Linux process and CPU usage monitor built in C usi
 
 ```sh
 git clone https://github.com/nikolaospanagopoulos/linux-performance-monitor.git
-cd linux-performance-monitor
-gcc -o main main.c
-./main
 ```
 
 ### 2️⃣ **Compile**
