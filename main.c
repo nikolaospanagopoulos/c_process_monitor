@@ -405,6 +405,7 @@ int main() {
            "-----"
            "----"
            "---------------\n");
+    printf("press q or CTRL-C to exit \n");
     usleep(400000); // Sleep for 400ms between updates.
   }
 
