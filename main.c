@@ -1,5 +1,6 @@
 #include <dirent.h>
 #include <signal.h>
+#include <stdarg.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -7,9 +8,7 @@
 #include <sys/select.h>
 #include <termios.h>
 #include <unistd.h>
-
-#define UTIME_INDEX 12
-#define STIME_INDEX 13
+enum state { NO_ERROR, PARSE_FILE_ERROR };
 #define MAX_FIELDS 52
 #define INITIAL_CAPACITY 1024
 
@@ -22,6 +21,7 @@ size_t capacity = 0;
 
 unsigned long long prev_total_cpu_time = 0;
 
+DIR *d;
 struct cpu_stats_info {
   char cpu_stat_line_str[512];
   unsigned long long user;
@@ -33,7 +33,7 @@ struct cpu_stats_info {
   unsigned long long softirq;
   unsigned long long steal;
 };
-
+struct cpu_stats_info *cpu_info = NULL;
 struct process_info {
   unsigned long pid;
   char process_name[50];
@@ -44,6 +44,30 @@ struct process_info {
   double rss;
 };
 
+void free_arrays() {
+  if (valid_proc) {
+    free(valid_proc);
+  }
+  if (prev_proc_cpu_time) {
+    free(prev_proc_cpu_time);
+  }
+}
+
+void exit_with_error(const char *message, ...) {
+  va_list args;
+  va_start(args, message);
+  vfprintf(stderr, message, args);
+  va_end(args);
+  free_arrays();
+  if (d) {
+    closedir(d);
+  }
+  if (cpu_info) {
+    free(cpu_info);
+  }
+  tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+  exit(EXIT_FAILURE);
+}
 void str_trim(char *str) {
   size_t len = strlen(str);
   while (len > 0 && str[len - 1] == ' ') {
@@ -52,15 +76,14 @@ void str_trim(char *str) {
   }
 }
 
-void parse_stat_file(const char *buffer, int pid, struct process_info *info) {
+enum state parse_stat_file(const char *buffer, int pid,
+                           struct process_info *info) {
   // find first and last ()
 
   char *start = strchr(buffer, '(');
   char *end = strrchr(buffer, ')');
-  if (!start || !end || end < start) {
-    fprintf(stderr, "Failed to locate command name boundaries for pid: %d\n",
-            pid);
-    exit(EXIT_FAILURE);
+  if ((!start || !end) || (end < start)) {
+    return PARSE_FILE_ERROR;
   }
 
   size_t comm_len = end - start - 1;
@@ -73,8 +96,7 @@ void parse_stat_file(const char *buffer, int pid, struct process_info *info) {
   char state;
   int n;
   if (sscanf(end + 2, "%c%n", &state, &n) != 1) {
-    fprintf(stderr, "Failed to parse state for pid: %d\n", pid);
-    exit(EXIT_FAILURE);
+    return PARSE_FILE_ERROR;
   }
   char *rest = end + 2 + n;
 
@@ -94,11 +116,11 @@ void parse_stat_file(const char *buffer, int pid, struct process_info *info) {
              &ppid, &pgrp, &session, &tty_nr, &tpgid, &flags, &minflt, &cminflt,
              &majflt, &cmajflt, &utime, &stime, &cutime, &cstime, &priority,
              &nice, &num_threads, &itrealvalue, &starttime, &vsize, &rss);
-
+  // TODO
   if (count < 21) {
     fprintf(stderr, "Error parsing remaining fields (only got %d fields)\n",
             count);
-    exit(EXIT_FAILURE);
+    return PARSE_FILE_ERROR;
   }
 
   info->utime = utime;
@@ -107,6 +129,7 @@ void parse_stat_file(const char *buffer, int pid, struct process_info *info) {
   info->state = state;
   info->rss =
       (rss > 0) ? (double)(rss * sysconf(_SC_PAGESIZE)) / (1024 * 1024) : 0;
+  return NO_ERROR;
 }
 
 // Function to ensure our dynamic arrays can index at least up to pid.
@@ -132,7 +155,7 @@ void ensure_capacity(size_t pid) {
 
   bool *new_valid = realloc(valid_proc, new_capacity * sizeof(bool));
   if (!new_valid) {
-    perror("realloc valid_proc");
+    perror("realloc new valid");
     exit(EXIT_FAILURE);
   }
   // Initialize new elements to false.
@@ -146,15 +169,17 @@ void ensure_capacity(size_t pid) {
 struct cpu_stats_info *get_cpu_stats() {
   FILE *cpu_stats_file = fopen("/proc/stat", "r");
   if (!cpu_stats_file) {
-    perror("Failed to open /proc/stat");
-    exit(EXIT_FAILURE);
+    exit_with_error("couldn't open /proc/stat file\n", NULL);
   }
   struct cpu_stats_info *cpu_info = malloc(sizeof(struct cpu_stats_info));
   if (!cpu_info) {
-    exit(EXIT_FAILURE);
+    fclose(cpu_stats_file);
+    exit_with_error("couldn't allocate memory\n", NULL);
   }
   if (fgets(cpu_info->cpu_stat_line_str, sizeof(cpu_info->cpu_stat_line_str),
-            cpu_stats_file)) {
+            cpu_stats_file) != NULL) {
+    // because structure like this -> cpu  1887166 11639 956416 90543274 33256 0
+    // 183585 0 0 0 we want to skip the "cpu "
     if (strncmp(cpu_info->cpu_stat_line_str, "cpu ", 4) == 0) {
       sscanf(cpu_info->cpu_stat_line_str + 5,
              "%llu %llu %llu %llu %llu %llu %llu %llu", &cpu_info->user,
@@ -162,6 +187,10 @@ struct cpu_stats_info *get_cpu_stats() {
              &cpu_info->iowait, &cpu_info->irq, &cpu_info->softirq,
              &cpu_info->steal);
     }
+  } else {
+    fclose(cpu_stats_file);
+    free(cpu_info);
+    exit_with_error("couldn't read string from stat file\n");
   }
   fclose(cpu_stats_file);
   return cpu_info;
@@ -178,14 +207,16 @@ char *read_command_line(long pid) {
   snprintf(path, sizeof(path), "/proc/%lu/cmdline", pid);
   FILE *file_ptr = fopen(path, "r");
   if (!file_ptr) {
+    fprintf(stderr, "Couldn't read from /proc/%lu/cmdline file\n", pid);
     return NULL;
   }
-  char *buffer = malloc(4096);
+  char *buffer = calloc(1, 4096);
   if (!buffer) {
-    perror("malloc");
+    fprintf(stderr, "Couldn't allocate memory\n");
     fclose(file_ptr);
-    return NULL;
+    exit(EXIT_FAILURE);
   }
+  memset(buffer, 0, 4096);
   size_t bytes_read = fread(buffer, 1, 4095, file_ptr);
   if (bytes_read <= 0) {
     fclose(file_ptr);
@@ -193,8 +224,6 @@ char *read_command_line(long pid) {
     return NULL;
   }
   fclose(file_ptr);
-
-  size_t len = strlen(buffer);
 
   buffer[bytes_read] = '\0';
   return buffer;
@@ -205,34 +234,47 @@ void read_stat_file_data(long pid, struct process_info *info) {
   snprintf(path, sizeof(path), "/proc/%lu/stat", pid);
   FILE *file_ptr = fopen(path, "r");
   if (!file_ptr) {
-    return;
+    free(info);
+    exit_with_error("Couldn't open /proc/%lu/stat file\n", pid);
   }
   char *buffer = malloc(1024);
   if (!buffer) {
     fclose(file_ptr);
-    perror("malloc");
-    return;
+    free(info);
+    exit_with_error("Couldn't allocate memory\n");
   }
   if (!fgets(buffer, 1024, file_ptr)) {
     free(buffer);
+    free(info);
     fclose(file_ptr);
-    return;
+    exit_with_error("coudn't read from /proc/%lu/stat file\n", pid);
   }
 
-  parse_stat_file(buffer, pid, info);
+  enum state state = parse_stat_file(buffer, pid, info);
+
+  if (state == PARSE_FILE_ERROR) {
+    free(buffer);
+    free(info);
+    fclose(file_ptr);
+    exit_with_error("couldn 't parse proc/%lu/stat file\n", pid, NULL);
+  }
 
   free(buffer);
   fclose(file_ptr);
 }
 
 void handle_exit(int sig) {
-  printf("\nCaught signal %d! Cleaning up...\n", sig);
-  free(prev_proc_cpu_time);
-  free(valid_proc);
+  if (prev_proc_cpu_time) {
+    free(prev_proc_cpu_time);
+  }
+  if (valid_proc) {
+    free(valid_proc);
+  }
   tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
   exit(0);
 }
-int main() { // Register signal handler (for SIGINT, for example).
+int main() {
+  // Register signal handler (for SIGINT, for example).
   signal(SIGINT, handle_exit);
 
   // Set terminal to non-canonical mode so that key presses are detected
@@ -271,10 +313,9 @@ int main() { // Register signal handler (for SIGINT, for example).
            "---------------\n");
 
     // Get the current overall CPU stats and compute total CPU time.
-    struct cpu_stats_info *cpu_info = get_cpu_stats();
+    cpu_info = get_cpu_stats();
     unsigned long long total_cpu_time = calculate_cpu_time_total(cpu_info);
 
-    DIR *d;
     struct dirent *dir;
     d = opendir("/proc");
 
@@ -286,9 +327,12 @@ int main() { // Register signal handler (for SIGINT, for example).
         long val = strtol(dir->d_name, &next, 10);
         if (next != dir->d_name && (*next == '\0' || *next == '\n')) {
           struct process_info *info = calloc(1, sizeof(struct process_info));
-          if (!info)
+          if (!info) {
+            fprintf(stderr, "couldn't allocate memory for process info\n");
             continue;
+          }
 
+          read_stat_file_data(val, info);
           process_args = read_command_line(val);
 
           if (process_args) {
@@ -298,16 +342,6 @@ int main() { // Register signal handler (for SIGINT, for example).
           } else {
             strcpy(info->command_line_args, "[]");
           }
-
-          if (process_name) {
-            strncpy(info->process_name, process_name,
-                    sizeof(info->process_name) - 1);
-            info->process_name[sizeof(info->process_name) - 1] = '\0';
-          } else {
-            strcpy(info->process_name, "[]");
-          }
-
-          read_stat_file_data(val, info);
 
           // Calculate cumulative process CPU time (user + system).
           unsigned long current_proc_time = info->utime + info->stime;
@@ -333,22 +367,23 @@ int main() { // Register signal handler (for SIGINT, for example).
           // Update the stored CPU time for this process.
           prev_proc_cpu_time[val] = current_proc_time;
 
-          printf("[%-50.50s] | %-6lu  | %-5.f | %-3c | %-7.2f| %-.140s\n",
+          printf("[%-50.50s] | %-6lu  | %-5.2f | %-3c | %-7.2f| %-.140s\n",
                  info->process_name, info->pid, usage_percent, info->state,
                  info->rss, info->command_line_args);
 
-          if (process_name) {
-            free(process_name);
-          }
           if (process_args) {
             free(process_args);
           }
           free(info);
         }
       }
-      closedir(d);
+      if (d) {
+        closedir(d);
+      }
     }
-    free(cpu_info);
+    if (cpu_info) {
+      free(cpu_info);
+    }
 
     // Update the global previous total CPU time.
     prev_total_cpu_time = total_cpu_time;
