@@ -8,9 +8,14 @@
 #include <sys/select.h>
 #include <termios.h>
 #include <unistd.h>
-enum state { NO_ERROR, PARSE_FILE_ERROR };
-#define MAX_FIELDS 52
 #define INITIAL_CAPACITY 1024
+enum state {
+  NO_ERROR,
+  PARSE_FILE_ERROR,
+  MEMORY_ERROR,
+  FILE_OPEN_ERROR,
+  FILE_READ_ERROR
+};
 
 struct termios oldt, newt;
 // Global dynamic arrays to store previous process CPU times and validity flags.
@@ -44,21 +49,17 @@ struct process_info {
   double rss;
 };
 
-void free_arrays() {
-  if (valid_proc) {
-    free(valid_proc);
-  }
-  if (prev_proc_cpu_time) {
-    free(prev_proc_cpu_time);
-  }
-}
-
 void exit_with_error(const char *message, ...) {
   va_list args;
   va_start(args, message);
   vfprintf(stderr, message, args);
   va_end(args);
-  free_arrays();
+  if (prev_proc_cpu_time) {
+    free(prev_proc_cpu_time);
+  }
+  if (valid_proc) {
+    free(valid_proc);
+  }
   if (d) {
     closedir(d);
   }
@@ -86,6 +87,7 @@ enum state parse_stat_file(const char *buffer, int pid,
     return PARSE_FILE_ERROR;
   }
 
+  // take only inside the ()
   size_t comm_len = end - start - 1;
   if (comm_len > sizeof(info->process_name)) {
     comm_len = sizeof(info->process_name) - 1;
@@ -128,14 +130,15 @@ enum state parse_stat_file(const char *buffer, int pid,
   info->pid = pid;
   info->state = state;
   info->rss =
+      // get total resident set size memory pages in bytes and convert to mb
       (rss > 0) ? (double)(rss * sysconf(_SC_PAGESIZE)) / (1024 * 1024) : 0;
   return NO_ERROR;
 }
 
 // Function to ensure our dynamic arrays can index at least up to pid.
-void ensure_capacity(size_t pid) {
+enum state ensure_capacity(size_t pid) {
   if (pid < capacity) {
-    return;
+    return NO_ERROR;
   }
   size_t new_capacity = (capacity == 0) ? INITIAL_CAPACITY : capacity;
   while (pid >= new_capacity) {
@@ -144,8 +147,7 @@ void ensure_capacity(size_t pid) {
   unsigned long *new_prev =
       realloc(prev_proc_cpu_time, new_capacity * sizeof(unsigned long));
   if (!new_prev) {
-    perror("realloc prev_proc_cpu_time");
-    exit(EXIT_FAILURE);
+    return MEMORY_ERROR;
   }
   // Initialize new elements to 0.
   for (size_t i = capacity; i < new_capacity; i++) {
@@ -155,8 +157,7 @@ void ensure_capacity(size_t pid) {
 
   bool *new_valid = realloc(valid_proc, new_capacity * sizeof(bool));
   if (!new_valid) {
-    perror("realloc new valid");
-    exit(EXIT_FAILURE);
+    return MEMORY_ERROR;
   }
   // Initialize new elements to false.
   for (size_t i = capacity; i < new_capacity; i++) {
@@ -164,6 +165,7 @@ void ensure_capacity(size_t pid) {
   }
   valid_proc = new_valid;
   capacity = new_capacity;
+  return NO_ERROR;
 }
 
 struct cpu_stats_info *get_cpu_stats() {
@@ -202,31 +204,32 @@ calculate_cpu_time_total(const struct cpu_stats_info *cpu_info) {
          cpu_info->iowait + cpu_info->irq + cpu_info->softirq + cpu_info->steal;
 }
 
-char *read_command_line(long pid) {
+enum state read_command_line(long pid, char **buffer) {
   char path[64];
   snprintf(path, sizeof(path), "/proc/%lu/cmdline", pid);
   FILE *file_ptr = fopen(path, "r");
   if (!file_ptr) {
     fprintf(stderr, "Couldn't read from /proc/%lu/cmdline file\n", pid);
-    return NULL;
+    return FILE_OPEN_ERROR;
   }
-  char *buffer = calloc(1, 4096);
-  if (!buffer) {
+  *buffer = calloc(1, 4096);
+  if (!*buffer) {
     fprintf(stderr, "Couldn't allocate memory\n");
     fclose(file_ptr);
-    exit(EXIT_FAILURE);
+    return MEMORY_ERROR;
   }
-  memset(buffer, 0, 4096);
-  size_t bytes_read = fread(buffer, 1, 4095, file_ptr);
+  memset(*buffer, 0, 4096);
+  size_t bytes_read = fread(*buffer, 1, 4095, file_ptr);
   if (bytes_read <= 0) {
     fclose(file_ptr);
-    free(buffer);
-    return NULL;
+    free(*buffer);
+    return FILE_READ_ERROR;
   }
   fclose(file_ptr);
 
-  buffer[bytes_read] = '\0';
-  return buffer;
+  (*buffer)[bytes_read] = '\0';
+
+  return NO_ERROR;
 }
 
 void read_stat_file_data(long pid, struct process_info *info) {
@@ -256,6 +259,8 @@ void read_stat_file_data(long pid, struct process_info *info) {
     free(buffer);
     free(info);
     fclose(file_ptr);
+    free(valid_proc);
+    free(prev_proc_cpu_time);
     exit_with_error("couldn 't parse proc/%lu/stat file\n", pid, NULL);
   }
 
@@ -333,7 +338,13 @@ int main() {
           }
 
           read_stat_file_data(val, info);
-          process_args = read_command_line(val);
+          enum state command_line_state = read_command_line(val, &process_args);
+          if (command_line_state == MEMORY_ERROR ||
+              command_line_state == FILE_READ_ERROR ||
+              command_line_state == FILE_OPEN_ERROR || 1) {
+            free(info);
+            exit_with_error("command line read error\n");
+          }
 
           if (process_args) {
             strncpy(info->command_line_args, process_args,
@@ -348,7 +359,11 @@ int main() {
           double usage_percent = 0.0;
 
           // Ensure our dynamic arrays are large enough.
-          ensure_capacity((size_t)val);
+          enum state returned_state = ensure_capacity((size_t)val);
+          if (returned_state == MEMORY_ERROR) {
+            free(info);
+            exit_with_error("memory allocation error\n");
+          }
 
           if (valid_proc[val]) {
             unsigned long proc_diff =
