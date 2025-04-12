@@ -219,10 +219,11 @@ enum state read_command_line(long pid, char **buffer) {
     return MEMORY_ERROR;
   }
   memset(*buffer, 0, 4096);
-  size_t bytes_read = fread(*buffer, 1, 4095, file_ptr);
+  size_t bytes_read = fread((*buffer), 1, 4095, file_ptr);
   if (bytes_read <= 0) {
     fclose(file_ptr);
     free(*buffer);
+    *buffer = NULL;
     return FILE_READ_ERROR;
   }
   fclose(file_ptr);
@@ -340,8 +341,7 @@ int main() {
           read_stat_file_data(val, info);
           enum state command_line_state = read_command_line(val, &process_args);
           if (command_line_state == MEMORY_ERROR ||
-              command_line_state == FILE_READ_ERROR ||
-              command_line_state == FILE_OPEN_ERROR || 1) {
+              command_line_state == FILE_OPEN_ERROR) {
             free(info);
             exit_with_error("command line read error\n");
           }
@@ -386,7 +386,7 @@ int main() {
                  info->process_name, info->pid, usage_percent, info->state,
                  info->rss, info->command_line_args);
 
-          if (process_args) {
+          if (process_args != NULL) {
             free(process_args);
           }
           free(info);
