@@ -233,25 +233,28 @@ enum state read_command_line(long pid, char **buffer) {
   return NO_ERROR;
 }
 
-void read_stat_file_data(long pid, struct process_info *info) {
+enum state read_stat_file_data(long pid, struct process_info *info) {
   char path[64];
   snprintf(path, sizeof(path), "/proc/%lu/stat", pid);
   FILE *file_ptr = fopen(path, "r");
   if (!file_ptr) {
     free(info);
-    exit_with_error("Couldn't open /proc/%lu/stat file\n", pid);
+    fprintf(stderr, "Couldn't open /proc/%lu/stat file\n", pid);
+    return FILE_OPEN_ERROR;
   }
   char *buffer = malloc(1024);
   if (!buffer) {
     fclose(file_ptr);
     free(info);
-    exit_with_error("Couldn't allocate memory\n");
+    fprintf(stderr, "malloc error, buffer in /proc/%lu/stat\n", pid);
+    return MEMORY_ERROR;
   }
   if (!fgets(buffer, 1024, file_ptr)) {
     free(buffer);
     free(info);
     fclose(file_ptr);
-    exit_with_error("coudn't read from /proc/%lu/stat file\n", pid);
+    fprintf(stderr, "coudn't read from /proc/%lu/stat file\n", pid);
+    return PARSE_FILE_ERROR;
   }
 
   enum state state = parse_stat_file(buffer, pid, info);
@@ -260,13 +263,12 @@ void read_stat_file_data(long pid, struct process_info *info) {
     free(buffer);
     free(info);
     fclose(file_ptr);
-    free(valid_proc);
-    free(prev_proc_cpu_time);
     exit_with_error("couldn 't parse proc/%lu/stat file\n", pid, NULL);
   }
 
   free(buffer);
   fclose(file_ptr);
+  return NO_ERROR;
 }
 
 void handle_exit(int sig) {
@@ -338,12 +340,16 @@ int main() {
             continue;
           }
 
-          read_stat_file_data(val, info);
+          enum state stat_file_state = read_stat_file_data(val, info);
+          if (stat_file_state != NO_ERROR) {
+            exit_with_error("EXITING: couldn 't parse proc/%lu/stat file\n",
+                            val, NULL);
+          }
           enum state command_line_state = read_command_line(val, &process_args);
           if (command_line_state == MEMORY_ERROR ||
               command_line_state == FILE_OPEN_ERROR) {
             free(info);
-            exit_with_error("command line read error\n");
+            exit_with_error("EXITING: command line read error\n");
           }
 
           if (process_args) {
@@ -362,7 +368,7 @@ int main() {
           enum state returned_state = ensure_capacity((size_t)val);
           if (returned_state == MEMORY_ERROR) {
             free(info);
-            exit_with_error("memory allocation error\n");
+            exit_with_error("EXITING: memory allocation error\n");
           }
 
           if (valid_proc[val]) {
